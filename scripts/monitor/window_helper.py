@@ -132,7 +132,22 @@ def bring_to_front(hwnd):
         print(f"窗口置顶失败: {e}")
         return False
 
-def capture_browser_window(browser_keywords=None):
+def _rect_distance(rect, preferred_rect):
+    if not rect or not preferred_rect:
+        return None
+    left, top, right, bottom = rect
+    px = float(preferred_rect.get('x', preferred_rect.get('left', 0)))
+    py = float(preferred_rect.get('y', preferred_rect.get('top', 0)))
+    pw = float(preferred_rect.get('width', 0))
+    ph = float(preferred_rect.get('height', 0))
+    cx = (left + right) / 2
+    cy = (top + bottom) / 2
+    pcx = px + pw / 2
+    pcy = py + ph / 2
+    size_penalty = abs((right - left) - pw) * 0.25 + abs((bottom - top) - ph) * 0.25
+    return abs(cx - pcx) + abs(cy - pcy) + size_penalty
+
+def capture_browser_window(browser_keywords=None, preferred_title=None, preferred_rect=None):
     """
     查找浏览器窗口并截图
     返回: (PIL.Image, window_rect)
@@ -153,6 +168,22 @@ def capture_browser_window(browser_keywords=None):
     
     # 选择第一个找到的窗口
     window = windows[0]
+    if preferred_rect:
+        scored = []
+        for candidate in windows:
+            score = _rect_distance(candidate.get('rect'), preferred_rect)
+            if score is not None:
+                scored.append((score, candidate))
+        if scored:
+            scored.sort(key=lambda item: item[0])
+            window = scored[0][1]
+    elif preferred_title:
+        preferred = preferred_title.lower()
+        for candidate in windows:
+            title = candidate.get('title', '')
+            if preferred in title.lower() or title.lower() in preferred:
+                window = candidate
+                break
     print(f"找到窗口: {window['title']}")
     
     # 置顶窗口 (如果需要)

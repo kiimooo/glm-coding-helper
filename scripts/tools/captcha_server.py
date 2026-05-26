@@ -32,11 +32,12 @@ from backend_config import (
 )
 
 try:
-    from window_helper import capture_browser_window
+    from window_helper import capture_browser_window, find_windows
     from captcha_crop import crop_challenge_image
 except ImportError:
     print("Warning: monitor modules not found.")
     capture_browser_window = None
+    find_windows = None
     crop_challenge_image = None
 
 DATASET_DIR = ROOT / "dataset" / "auto_captured"
@@ -54,12 +55,30 @@ class AppState:
         self.gui_update_needed = False
         self.latest_request_ts = 0
         self.recognition_results = {}
-        self.auto_click_enabled = False
-        self.rush_mode = False
-        self.rush_target_time = ""
+        self.selected_browser_title = ""
         self.cached_modal = None  # {"img": PIL.Image, "crop_rect": tuple, "ts": float, "density": float}
 
 state = AppState()
+
+BROWSER_WINDOW_KEYWORDS = [
+    "Chrome",
+    "Google Chrome",
+    "Edge",
+    "Microsoft Edge",
+    "Firefox",
+    "Brave",
+    "Opera",
+    "bigmodel",
+    "Z.ai",
+    "GLM",
+    "智谱",
+    "智谱AI",
+    "智谱AI开放平台",
+]
+
+MIN_CAPTCHA_WIDTH = 180
+MIN_CAPTCHA_HEIGHT = 150
+MIN_CAPTCHA_DENSITY = 0.01
 
 def log_to_gui(msg):
     timestamp = datetime.now().strftime("%H:%M:%S")
@@ -97,6 +116,40 @@ def locate_modal(img):
     cx, cy = w // 2, h // 2
     pixels = img.load()
     candidates = []
+
+    def add_row_runs(y, check_fn):
+        x = 0
+        while x < w:
+            while x < w and not check_fn(pixels[x, y]):
+                x += 1
+            start = x
+            while x < w and check_fn(pixels[x, y]):
+                x += 1
+            end = x - 1
+            width = end - start
+            center_x = (start + end) / 2
+            if 260 < width < min(760, w * 0.92) and center_x > w * 0.18:
+                candidates.append((start, end, y))
+
+    for y in range(int(h * 0.10), int(h * 0.92), 6):
+        add_row_runs(y, is_white)
+        add_row_runs(y, is_dark)
+
+    if candidates:
+        from collections import Counter
+        grouped = []
+        for l, r, y in candidates:
+            grouped.append((round(l / 12) * 12, round(r / 12) * 12, y, l, r))
+        counts = Counter((g[0], g[1]) for g in grouped)
+        (gl, gr), freq = counts.most_common(1)[0]
+        if freq >= 3:
+            matches = [g for g in grouped if (g[0], g[1]) == (gl, gr)]
+            l = min(g[3] for g in matches)
+            r = max(g[4] for g in matches)
+            ys = [g[2] for g in matches]
+            pad = int((r - l) * 0.08)
+            return (max(0, l), max(0, min(ys) - pad), min(w, r), min(h, max(ys) + pad))
+
     row_idx = 0
     for y in range(int(h * 0.15), int(h * 0.85), 8):
         if is_white(pixels[cx, y]) or is_dark(pixels[cx, y]):
@@ -127,11 +180,26 @@ def locate_modal(img):
     ys = [c[2] for c in candidates if (c[0], c[1]) == (l, r)]
     return (l, min(ys) - int((r - l) * 0.08), r, max(ys) + int((r - l) * 0.08))
 
+def is_acceptable_captcha_image(img):
+    if not img:
+        return False, "empty image"
+    width, height = img.size
+    density = get_color_density(img)
+    ok = (
+        width >= MIN_CAPTCHA_WIDTH
+        and height >= MIN_CAPTCHA_HEIGHT
+        and density >= MIN_CAPTCHA_DENSITY
+    )
+    reason = f"size={width}x{height} density={density:.3f}"
+    return ok, reason
+
 import subprocess
 import queue
 
 _worker_proc = None
 _worker_lock = threading.Lock()
+_recognition_lock = threading.Lock()
+_request_lock = threading.Lock()
 _result_queue = queue.Queue()
 
 def _reader_thread(proc):
@@ -180,6 +248,15 @@ def _get_worker():
             log_to_gui("识别子进程已启动")
         return _worker_proc
 
+def _stop_worker_proc():
+    global _worker_proc
+    if _worker_proc is not None and _worker_proc.poll() is None:
+        try:
+            _worker_proc.kill()
+        except Exception:
+            pass
+    _worker_proc = None
+
 def recognize_captcha(image_path, prompt_chars, crop_rect=None):
     try:
         proc = _get_worker()
@@ -193,11 +270,10 @@ def recognize_captcha(image_path, prompt_chars, crop_rect=None):
         proc.stdin.flush()
         print(f"[CAPTURE] waiting for worker result...", flush=True)
         try:
-            result_line = _result_queue.get(timeout=15)
+            result_line = _result_queue.get(timeout=90)
         except queue.Empty:
             print(f"[CAPTURE] worker timeout!", flush=True)
-            global _worker_proc
-            _worker_proc = None
+            _stop_worker_proc()
             return {"error": "worker timeout", "success": False}
         print(f"[CAPTURE] got result: {result_line.decode()[:200]}", flush=True)
         return json.loads(result_line)
@@ -205,8 +281,12 @@ def recognize_captcha(image_path, prompt_chars, crop_rect=None):
         import traceback; traceback.print_exc()
         return {"error": str(e), "success": False}
 
-def trigger_auto_capture(chars_text: str, request_ts: int):
-    state.latest_request_ts = request_ts
+def trigger_auto_capture(chars_text: str, request_ts: int, browser_hint=None):
+    with _request_lock:
+        if request_ts < state.latest_request_ts:
+            print(f"[CAPTURE] stale request ignored: ts={request_ts}", flush=True)
+            return
+        state.latest_request_ts = request_ts
     my_id = request_ts
     t0 = time.time()
     print(f"[CAPTURE] === start: {chars_text} ts={request_ts} ===", flush=True)
@@ -227,7 +307,18 @@ def trigger_auto_capture(chars_text: str, request_ts: int):
             if not capture_browser_window:
                 time.sleep(0.08)
                 continue
-            screen, rect = capture_browser_window(["Chrome", "Google Chrome", "bigmodel"])
+            browser_hint = browser_hint or {}
+            selected_title = (
+                browser_hint.get("title")
+                or state.selected_browser_title.strip()
+                or None
+            )
+            selected_rect = browser_hint.get("rect")
+            screen, rect = capture_browser_window(
+                BROWSER_WINDOW_KEYWORDS,
+                preferred_title=selected_title,
+                preferred_rect=selected_rect,
+            )
             time.sleep(0.001)
             if not screen:
                 continue
@@ -250,7 +341,9 @@ def trigger_auto_capture(chars_text: str, request_ts: int):
             modal_img = screen.crop(modal_rect)
             image_only, crop_rect = crop_challenge_image(modal_img)
             time.sleep(0.001)
-            if image_only and image_only.size[1] >= 250:
+            ok, reason = is_acceptable_captcha_image(image_only)
+            print(f"[CAPTURE] candidate attempt #{attempt+1}: {reason}", flush=True)
+            if ok:
                 best_img = image_only
                 best_crop_rect = crop_rect
                 print(f"[CAPTURE] captured on attempt #{attempt+1} in {(time.time()-t0)*1000:.0f}ms", flush=True)
@@ -276,7 +369,16 @@ def trigger_auto_capture(chars_text: str, request_ts: int):
         print(f"[CAPTURE] saved in {(time.time()-t1)*1000:.0f}ms, calling recognize...", flush=True)
 
         log_to_gui("开始识别...")
-        result = recognize_captcha(str(save_path), list(chars_text), crop_rect=best_crop_rect)
+        with _recognition_lock:
+            if state.latest_request_ts != my_id:
+                print(f"[CAPTURE] stale before recognize: ts={request_ts}", flush=True)
+                log_to_gui("SKIP: 已有更新验证码请求")
+                return
+            result = recognize_captcha(str(save_path), list(chars_text), crop_rect=best_crop_rect)
+            if state.latest_request_ts != my_id:
+                print(f"[CAPTURE] stale after recognize: ts={request_ts}", flush=True)
+                log_to_gui("SKIP: 旧识别结果已丢弃")
+                return
         t2 = time.time()
         print(f"[CAPTURE] total={(t2-t0)*1000:.0f}ms recog={result.get('success')}", flush=True)
 
@@ -335,9 +437,14 @@ class CaptchaHandler(BaseHTTPRequestHandler):
                 request_ts = int(data.get("ts", time.time() * 1000))
                 chars = re.findall(r"[\u4e00-\u9fff]", text or "")
                 chars_text = "".join(chars[:3])
+                browser_hint = data.get("browser") if isinstance(data.get("browser"), dict) else {}
 
                 if chars_text:
-                    threading.Thread(target=trigger_auto_capture, args=(chars_text, request_ts), daemon=True).start()
+                    threading.Thread(
+                        target=trigger_auto_capture,
+                        args=(chars_text, request_ts, browser_hint),
+                        daemon=True,
+                    ).start()
 
                 self.send_json(200, {"status": "processing", "chars": chars_text, "ts": request_ts})
 
@@ -388,18 +495,8 @@ class CaptchaHandler(BaseHTTPRequestHandler):
                 action = data.get("action")
                 if action == "get":
                     self.send_json(200, {
-                        "auto_click": state.auto_click_enabled,
-                        "rush_mode": state.rush_mode,
-                        "rush_target": state.rush_target_time,
                         "results_count": len(state.recognition_results),
                     })
-                elif action == "set_auto_click":
-                    state.auto_click_enabled = data.get("value", True)
-                    self.send_json(200, {"auto_click": state.auto_click_enabled})
-                elif action == "set_rush_mode":
-                    state.rush_mode = data.get("value", False)
-                    state.rush_target_time = data.get("target_time", "")
-                    self.send_json(200, {"rush_mode": state.rush_mode, "target": state.rush_target_time})
                 else:
                     self.send_json(400, {"error": "unknown action"})
             else:
@@ -437,8 +534,8 @@ class CaptchaHandler(BaseHTTPRequestHandler):
 def run_gui():
     root = tk.Tk()
     root.title("Captcha Server v2 - Auto Rush Mode")
-    root.geometry("480x420")
-    root.attributes("-topmost", True)
+    root.geometry("620x380")
+    root.attributes("-topmost", False)
     root.configure(bg="#f0f2f5")
 
     style = ttk.Style()
@@ -466,16 +563,36 @@ def run_gui():
     lbl_save = ttk.Label(main_frame, text="无", wraplength=320)
     lbl_save.grid(row=row, column=1, sticky=tk.W, pady=2); row += 1
 
-    var_auto_click = tk.BooleanVar(value=False)
-    cb_auto = ttk.Checkbutton(main_frame, text="自动点击验证码 (pyautogui)", variable=var_auto_click)
-    cb_auto.grid(row=row, column=0, columnspan=2, sticky=tk.W, pady=5); row += 1
+    ttk.Label(main_frame, text="Browser window:").grid(row=row, column=0, sticky=tk.W, pady=2)
+    browser_var = tk.StringVar(value="Auto")
+    browser_combo = ttk.Combobox(main_frame, textvariable=browser_var, width=34, state="readonly")
+    browser_combo.grid(row=row, column=1, sticky=tk.W, pady=2)
+    refresh_button = ttk.Button(main_frame, text="Refresh")
+    refresh_button.grid(row=row, column=2, sticky=tk.W, padx=(8, 0))
+    row += 1
 
-    var_rush = tk.BooleanVar(value=False)
-    cb_rush = ttk.Checkbutton(main_frame, text="抢购模式 (10点卡点)", variable=var_rush)
-    cb_rush.grid(row=row, column=0, columnspan=2, sticky=tk.W, pady=2); row += 1
+    def refresh_browser_windows():
+        if not find_windows:
+            values = ["Auto"]
+        else:
+            titles = [w.get("title", "") for w in find_windows(BROWSER_WINDOW_KEYWORDS)]
+            values = ["Auto"] + [title for title in titles if title]
+        browser_combo["values"] = values
+        if browser_var.get() not in values:
+            browser_var.set("Auto")
+        state.selected_browser_title = "" if browser_var.get() == "Auto" else browser_var.get()
 
-    log_box = tk.Text(main_frame, height=12, width=58, font=("Consolas", 9), bg="#ffffff", relief=tk.FLAT)
-    log_box.grid(row=row, column=0, columnspan=2, pady=8); row += 1
+    def on_browser_selected(_event=None):
+        selected = browser_var.get()
+        state.selected_browser_title = "" if selected == "Auto" else selected
+        log_to_gui(f"Browser window: {selected}")
+
+    browser_combo.bind("<<ComboboxSelected>>", on_browser_selected)
+    refresh_button.configure(command=refresh_browser_windows)
+    refresh_browser_windows()
+
+    log_box = tk.Text(main_frame, height=11, width=58, font=("Consolas", 9), bg="#ffffff", relief=tk.FLAT)
+    log_box.grid(row=row, column=0, columnspan=3, pady=8); row += 1
 
     def update_gui():
         try:
@@ -497,17 +614,6 @@ def run_gui():
         except Exception:
             pass
         root.after(200, update_gui)
-
-    def toggle_auto_click(*args):
-        state.auto_click_enabled = var_auto_click.get()
-        log_to_gui(f"自动点击: {'开启' if state.auto_click_enabled else '关闭'}")
-
-    def toggle_rush(*args):
-        state.rush_mode = var_rush.get()
-        log_to_gui(f"抢购模式: {'开启' if state.rush_mode else '关闭'}")
-
-    var_auto_click.trace_add("write", toggle_auto_click)
-    var_rush.trace_add("write", toggle_rush)
 
     def start_server():
         try:

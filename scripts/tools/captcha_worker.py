@@ -42,11 +42,21 @@ if not DETECTOR_PATH.exists() and _LEGACY_DETECTOR_PATH.exists():
     DETECTOR_PATH = _LEGACY_DETECTOR_PATH
 OCR_MODE = os.environ.get("CNCAPTCHA_OCR_MODE", "auto").lower()
 if OCR_MODE in {"cpu", "cpu_parallel", "cpu-pool"}:
-    OCR_PYTHON = ROOT / ".venv_paddle" / "Scripts" / "python.exe"
+    OCR_PYTHON = Path(
+        os.environ.get(
+            "CNCAPTCHA_CPU_OCR_PYTHON",
+            str(ROOT / ".venv_paddle" / "Scripts" / "python.exe"),
+        )
+    )
     OCR_WORKER = ROOT / "scripts" / "tools" / "ppocr_cpu_pool_worker.py"
     OCR_ENGINE_NAME = f"yolo+{os.environ.get('CNCAPTCHA_CPU_OCR_MODEL', 'hybrid')}_cpu_parallel"
 else:
-    OCR_PYTHON = ROOT / ".venv_paddle_gpu" / "Scripts" / "python.exe"
+    OCR_PYTHON = Path(
+        os.environ.get(
+            "CNCAPTCHA_GPU_OCR_PYTHON",
+            str(ROOT / ".venv_paddle_gpu" / "Scripts" / "python.exe"),
+        )
+    )
     OCR_WORKER = ROOT / "scripts" / "tools" / "ppocr_gpu_worker.py"
     OCR_ENGINE_NAME = f"yolo+{os.environ.get('CNCAPTCHA_GPU_OCR_MODEL', 'PP-OCRv5_server_rec')}_gpu"
 CROP_DIR = ROOT / "logs" / "ppocr_live_crops"
