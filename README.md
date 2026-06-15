@@ -101,17 +101,11 @@ Greasy Fork 和仓库根目录的 `glm-coding-helper.user.js` 都是给普通用
 
 ### 4. 启动后端
 
-如果下载的是自带环境包：
-
 ```text
-start-backend.cmd
+start-backend-pipeline-gui.cmd
 ```
 
-如果下载的是在线安装包：
-
-```text
-one-click-start.cmd
-```
+首次使用如果环境没装好，会弹 PowerShell 提示，按提示输入 `1` 让它自动 `pip install`，或者先双击 `one-click-start.cmd` 装好环境再启动。
 
 后端启动后默认监听：
 
@@ -136,7 +130,7 @@ https://www.bigmodel.cn/glm-coding
 > **建议**：默认开 **2 个窗口**，先把流程跑稳。多窗口不等于高成功率，反而可能让账号被 RPM 风控盯上，整轮全废。
 
 1. 先安装好油猴插件，配置好油猴脚本。使用 Chrome 时要在扩展页面开启开发者模式，然后找到 Tampermonkey 详情，把“允许用户脚本”“在无痕模式下启用”“允许访问文件网址”按需打开。
-2. 下载并解压 Release 包，双击 `start-backend.cmd` 或 `one-click-start.cmd` 启动本地后端。
+2. 下载并解压 Release 包，双击 `start-backend-pipeline-gui.cmd` 启动本地后端。
 3. 打开 GLM Coding 页面测试脚本是否正常，脚本会自动补上内置优惠入口。
 4. 每天 9 点 30 分前进入抢购页面准备，晚了可能就打不开了。提前准备好手机支付宝付款。
 5. 多开几个窗口，等快到 10 点的时候点击好验证码但不要确定，等 10 点一到再按确定。**默认推荐 2 个窗口**（脚本弹窗默认值已从 3 改为 2，上限仍为 10，按需选择）。窗口开得越多，请求数量按窗口数放大，撞 RPM 上限的概率越高，近期已有大量高并发脚本因此全轮失败。
@@ -155,6 +149,7 @@ https://www.bigmodel.cn/glm-coding
 - 遇到真正有金额的支付二维码，请自行确认后再扫码支付。
 - 多窗口并发不是越多越好。**2026-06 起智谱升级了 RPM 风控**，市面上高并发（多窗口批量请求）+ 屯码（预刷腾讯验证码 ticket 缓存复用）的同类脚本近期已**大面积失效**。窗口开得越多、请求越密集，越容易撞 RPM 上限，整轮秒杀全部返回 555/429。本项目走单窗口单发 + 实时 OCR 路线，相对安全。脚本默认 2 个窗口、上限 10 个，由用户按需选择；窗口开得越多，自身账号被风控的概率越高，请知悉。
 - 抢购是否成功受库存、限流、账号状态、支付速度等因素影响，脚本不能保证一定抢到。
+- **如果之前抢过且账号被风控盯上，强烈建议试试 Chrome / Edge 的"无痕模式"窗口**（`Ctrl+Shift+N`）。无痕窗口没有历史 Cookie / 缓存 / Service Worker / 本地存储，可能消除隐形的风控标记。Tampermonkey 需在扩展详情页允许在无痕模式中启用（见上文）。注意：无痕窗口关掉就丢失所有数据，配置靠 `GM_setValue` 是同步到 Tampermonkey 内部的，正常保留。
 
 油猴菜单里可以打开配置面板、一键多开窗口、清除今日套餐状态缓存。
 
@@ -202,24 +197,38 @@ https://www.bigmodel.cn/glm-coding
 
 启动（任选其一）：
 ```powershell
-# 方式 1：双击 start-backend-pipeline.cmd（推荐 Windows 用户）
-# 方式 2：命令行
-pwsh start-backend-pipeline.ps1
-# 方式 3：手动
+# 方式 1：双击 start-backend-pipeline-gui.cmd（推荐 Windows 用户，弹 GUI 窗口）
+# 方式 2：命令行手动
+pwsh start-backend-pipeline-gui.ps1
+# 方式 3：直接跑后端
 python backend/server.py
 ```
 
 双击启动器会自动检测 venv（`venv/` 或 `.venv_paddle/`）、检查依赖（fastapi/uvicorn/psutil）、缺失时自动 pip install；端口被占用时会显示中文提示（含 PID/进程名/命令行），杀进程前需用户确认。
+
+### 可视化 GUI 启动器
+
+如果想在窗口里实时看后端状态（worker 就绪进度、最近识别结果、stdout 日志），用 GUI 启动器：
+
+```text
+start-backend-pipeline-gui.cmd
+```
+
+`backend/gui.py` 会拉起 `backend.server` 子进程并接管其 stdout，弹出 Tk 窗口：
+
+- **顶部状态栏**：系统状态（启动中 / 运行中）、YOLO/OCR worker 数、监听地址
+- **中间识别列表**：最近 20 条识别结果（提示字、预测字、置信度、yolo/ocr 耗时）
+- **底部日志框**：后端 stdout 实时滚动，`worker ready` / `[architect]` / 错误高亮
+
+关闭窗口时 GUI 会自动 `terminate` 后端子进程，不用手动到任务管理器杀。
 
 ## 常用文件
 
 | 文件 | 用途 |
 | --- | --- |
 | `glm-coding-helper.user.js` | 给 Tampermonkey 安装的主脚本 |
-| `start-backend.cmd` | 启动已有本地后端环境（旧版单进程） |
-| `start-backend-pipeline.cmd` | 双击启动 pipeline 后端（v8.20+ 推荐） |
-| `one-click-start.cmd` | 自动安装环境并启动 |
-| `install-env.cmd` | 手动安装 CPU 后端环境 |
+| `one-click-start.cmd` | 首次安装环境（CPU 依赖） |
+| `start-backend-pipeline-gui.cmd` | 日常启动 pipeline 后端 + 弹 Tk 可视化窗口 |
 | `scripts/` | 后端和打包脚本 |
 | `backend/` | Pipeline 后端（FastAPI + 多进程 YOLO→OCR） |
 | `models/` | 本地识别模型 |

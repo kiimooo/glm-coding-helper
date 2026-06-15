@@ -89,6 +89,10 @@ ready_count = 0
 ready_count_lock = threading.Lock()
 _shutdown = threading.Event()
 
+# ── 最近识别结果 ring buffer（供 GUI 拉取）──────────────────────
+from collections import deque
+_recent_results: "deque[dict]" = deque(maxlen=20)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -173,6 +177,7 @@ async def lifespan(app: FastAPI):
 
 
 def result_listener_thread():
+    import time as _t
     while True:
         res = res_queue.get()
         if not res:
@@ -180,6 +185,26 @@ def result_listener_thread():
         req_id = res.get("req_id")
         with request_lock:
             future = pending_requests.pop(req_id, None)
+        # 写入最近识别结果（脱敏，只保留 GUI 需要的字段）
+        if res.get("success"):
+            snapshot = {
+                "ts": _t.time(),
+                "prompt": res.get("prompt", []),
+                "pred_text": res.get("pred_text", ""),
+                "confidence": res.get("confidence", 0.0),
+                "elapsed_ms": res.get("elapsed_ms", 0.0),
+                "yolo_ms": res.get("yolo_ms", 0.0),
+                "ocr_ms": res.get("ocr_ms", 0.0),
+                "req_id": req_id,
+            }
+        else:
+            snapshot = {
+                "ts": _t.time(),
+                "success": False,
+                "error": res.get("error", "unknown"),
+                "req_id": req_id,
+            }
+        _recent_results.append(snapshot)
         if future and not future.done():
             future.get_loop().call_soon_threadsafe(future.set_result, res)
 
@@ -222,7 +247,25 @@ async def health():
     alive = sum(1 for p in workers_list if p.is_alive()) if workers_list else 0
     total = N_YOLO + N_OCR
     status = "ok" if r >= total else "starting"
-    return {"status": status, "workers": total, "ready_workers": r, "alive_workers": alive}
+    return {
+        "status": status,
+        "workers": total,
+        "ready_workers": r,
+        "alive_workers": alive,
+        "n_yolo": N_YOLO,
+        "n_ocr": N_OCR,
+        "port": PORT,
+    }
+
+
+@app.get("/recent")
+async def recent_results(limit: int = 20):
+    """返回最近 N 条识别结果，供 GUI 轮询拉取"""
+    limit = max(1, min(20, limit))
+    items = list(_recent_results)[-limit:]
+    # 反转，最新的在前
+    items.reverse()
+    return {"count": len(items), "results": items}
 
 
 @app.post("/direct")

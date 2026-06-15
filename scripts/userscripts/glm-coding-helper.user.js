@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         智谱 GLM Coding Plan 抢购助手 + 本地 OCR 自动验证码
 // @namespace    http://tampermonkey.net/
-// @version      8.20
+// @version      8.21.1
 // @description  GLM Coding Rush / 智谱 GLM Coding Plan 抢购助手，一键抢购油猴脚本 / Tampermonkey userscript，配合本地 CPU/GPU OCR 自动识别中文点选验证码并点击，支持多窗口并发、限流重试和支付页安全保护
 // @author       mumumi
 // @include      https://*bigmodel.cn/glm-coding*
@@ -514,10 +514,19 @@
         RUSH_TARGET_HOUR    : 9,
         RUSH_TARGET_MIN     : 59,
         RUSH_TARGET_SEC     : 58,
+        // v8.21: 高级模式（默认关闭；开启后可调点击/限流重试间隔，加 ±20% 随机抖动防风控）
+        ADVANCED_MODE       : false,
+        CAPTCHA_CLICK_DELAY : 220,   // 验证码三个字之间的间隔（ms）
+        RL_RETRY_DELAY      : 1000,  // 限流弹窗关闭后多久再点购买（ms）
     };
     function loadCfg() { try { const s = GM_getValue(STORAGE_KEY, null); return s ? { ...DEF, ...JSON.parse(s) } : { ...DEF }; } catch { return { ...DEF }; } }
     function saveCfg(c) { GM_setValue(STORAGE_KEY, JSON.stringify(c)); }
     const CFG = loadCfg();
+    // v8.21: 延迟统一加 ±20% 随机抖动（经典/高级模式都有，防 RPM 风控）
+    function jitterDelay(base) {
+        const delta = base * 0.2;
+        return Math.max(1, Math.round(base + (Math.random() * 2 - 1) * delta));
+    }
     GM_registerMenuCommand('⚙️ 打开配置面板', openConfigPanel);
     GM_registerMenuCommand('🗑️ 清除今日套餐状态缓存', () => { localStorage.removeItem(_dsKey); alert('今日状态已清除，即将刷新。'); location.reload(); });
     GM_registerMenuCommand('🚀 一键多开窗口', openMultipleWindows);
@@ -875,6 +884,24 @@
                 <span style="font-size:14px;color:#888">:</span>
                 <input type="number" id="glm-rs" value="${CFG.RUSH_TARGET_SEC}" min="0" max="59" style="width:52px;padding:3px 6px;border:1px solid #d9d9d9;border-radius:4px;font-size:13px;text-align:center">
             </div>
+            <div style="border-top:1px dashed #eee;padding-top:12px;margin-top:4px"></div>
+            <label style="display:flex;align-items:center;cursor:pointer">
+                <input type="checkbox" id="glm-advanced" ${CFG.ADVANCED_MODE ? 'checked' : ''} style="margin-right:8px">
+                <span style="font-size:14px;color:#555">高级模式（自定义点击/重试速度）</span>
+                <span title="经典模式已自带 ±20% 随机抖动防风控。开启高级模式可调验证码点击间隔、限流重试间隔，抖动仍然保留。" style="margin-left:6px;cursor:help;color:#999;font-size:14px;border:1px solid #ccc;border-radius:50%;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;line-height:1">?</span>
+            </label>
+            <div id="glm-advanced-panel" style="margin-top:8px;padding:10px 12px 10px 26px;background:#fafafa;border-radius:6px;display:${CFG.ADVANCED_MODE ? 'block' : 'none'}">
+                <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+                    <span style="font-size:13px;color:#666;min-width:140px">验证码点击间隔 (ms)</span>
+                    <input type="number" id="glm-ccd" value="${CFG.CAPTCHA_CLICK_DELAY}" min="50" max="2000" step="10" style="width:80px;padding:3px 6px;border:1px solid #d9d9d9;border-radius:4px;font-size:13px;text-align:center">
+                    <span style="font-size:12px;color:#999">默认 220，±20% 抖动</span>
+                </div>
+                <div style="display:flex;align-items:center;gap:8px">
+                    <span style="font-size:13px;color:#666;min-width:140px">限流重试间隔 (ms)</span>
+                    <input type="number" id="glm-rld" value="${CFG.RL_RETRY_DELAY}" min="100" max="10000" step="50" style="width:80px;padding:3px 6px;border:1px solid #d9d9d9;border-radius:4px;font-size:13px;text-align:center">
+                    <span style="font-size:12px;color:#999">默认 1000，±20% 抖动</span>
+                </div>
+            </div>
             <div style="display:flex;justify-content:space-between;gap:10px">
                 <button id="glm-multi" style="padding:8px 16px;border:1px solid #52c41a;background:#f6ffed;color:#52c41a;border-radius:6px;cursor:pointer;font-weight:600">🚀 一键多开</button>
                 <div style="display:flex;gap:10px">
@@ -887,6 +914,9 @@
         const getPkgs = buildTransferBox(document.getElementById('glm-wp'), PKGS_MAP, CFG.PACKAGES_PRIORITY, '套餐优先级');
         const getTabs = buildTransferBox(document.getElementById('glm-wt'), TABS_MAP, CFG.TABS_PRIORITY, '订阅周期优先级');
         panel.querySelector('#glm-cc').onclick = () => ov.remove();
+        panel.querySelector('#glm-advanced').onchange = (e) => {
+            panel.querySelector('#glm-advanced-panel').style.display = e.target.checked ? 'block' : 'none';
+        };
         panel.querySelector('#glm-multi').onclick = () => { openMultipleWindows(); };
         panel.querySelector('#glm-cs').onclick = () => {
             const p = getPkgs(), t = getTabs();
@@ -904,6 +934,9 @@
                 RUSH_TARGET_HOUR: parseInt(panel.querySelector('#glm-rh').value, 10),
                 RUSH_TARGET_MIN: parseInt(panel.querySelector('#glm-rm').value, 10),
                 RUSH_TARGET_SEC: parseInt(panel.querySelector('#glm-rs').value, 10),
+                ADVANCED_MODE: panel.querySelector('#glm-advanced').checked,
+                CAPTCHA_CLICK_DELAY: Math.max(50, parseInt(panel.querySelector('#glm-ccd').value, 10) || 220),
+                RL_RETRY_DELAY: Math.max(100, parseInt(panel.querySelector('#glm-rld').value, 10) || 1000),
                 SAFE_DEFAULTS_VERSION,
             });
             ov.remove(); alert('已保存，即将刷新。'); location.reload();
@@ -920,6 +953,11 @@
             console.log('[GLM] rush lock cleared');
         }
         if (ensureDiscountEntry()) return;
+        // v8.21: 黄金时间内每天首条提示建议试试无痕模式（sessionStorage 去重）
+        if (isGoldenTime() && !sessionStorage.getItem('glm_nudge_incognito_v1')) {
+            sessionStorage.setItem('glm_nudge_incognito_v1', '1');
+            setBar('🕶️ 抢不到？试试无痕窗口（Ctrl+Shift+N）！没有历史 Cookie/缓存/Service Worker，可能消除隐形的风控标记。Tampermonkey 需在扩展详情页允许在无痕中启用。', '#722ed1');
+        }
         if (state === 'SLEEPING') {
             const rem = sleepUntil - Date.now();
             if (rem <= 0) {
@@ -1074,7 +1112,12 @@
                     return;
                 }
                 setBar(`⚠️ 限流 ${taskRLCount}/${MAX_RL}，自动关闭后重试...`, '#d46b08');
-                taskPhase = 'IDLE'; return;
+                // v8.21: 高级模式可调限流重试间隔（带 ±20% 抖动防风控）
+                // 期间用 WAITING_RL 状态占位，避免下一轮 tick 重复关弹窗
+                const _rlDelay = jitterDelay(CFG.RL_RETRY_DELAY);
+                taskPhase = 'WAITING_RL';
+                setTimeout(() => { taskPhase = 'IDLE'; }, _rlDelay);
+                return;
             }
             if (isPayDialog()) {
                 const verdict = checkPayDialog();
@@ -1768,7 +1811,8 @@
                 if (!Number.isFinite(ny) && Number.isFinite(Number(c.rel_y))) ny = Number(c.rel_y) / rect.height;
                 if (!Number.isFinite(nx) || !Number.isFinite(ny)) continue;
                 dispatchClickAt(bgEl, nx * rect.width, ny * rect.height, c.char || String(i + 1));
-                await new Promise(function(r) { setTimeout(r, 220); });
+                var _clickDelay = jitterDelay(CFG.CAPTCHA_CLICK_DELAY);
+                await new Promise(function(r) { setTimeout(r, _clickDelay); });
             }
             await new Promise(function(r) { setTimeout(r, 350); });
             rushState = 'idle';

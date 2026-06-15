@@ -12,13 +12,13 @@ $env:PYTHONIOENCODING = "utf-8"
 
 $VenvPython = Join-Path $Root ".venv_paddle\Scripts\python.exe"
 if (-not (Test-Path $VenvPython)) {
-    throw "Missing .venv_paddle. Run install-env.cmd first."
+    throw "Missing .venv_paddle. Run one-click-start.cmd first."
 }
 
 Write-Host "Checking portable CPU environment..."
 & $VenvPython -c "import ultralytics, paddleocr, paddlex, cv2, PIL, numpy; print('portable imports ok')"
 if ($LASTEXITCODE -ne 0) {
-    throw "The local .venv_paddle is incomplete. Run install-env.cmd again, then rerun this script."
+    throw "The local .venv_paddle is incomplete. Run one-click-start.cmd again, then rerun this script."
 }
 
 $Weight = Join-Path $Root "models\weights\yolo-captcha-detector.pt"
@@ -39,21 +39,22 @@ New-Item -ItemType Directory -Path $PackageDir | Out-Null
 $Include = @(
     "glm-coding-helper.user.js",
     "scripts\userscripts\glm-coding-captcha-direct.user.js",
-    "start-backend.cmd",
-    "install-env.cmd",
     "one-click-start.cmd",
+    "start-backend-pipeline-gui.cmd",
+    "start-backend-pipeline-gui.ps1",
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
     "requirements-backend-cpu.txt",
     "scripts",
     "models",
+    "backend",
     ".venv_paddle",
     ".paddlex_cache_cpu",
     ".paddle_home"
 )
 
-$KnownRootCmdItems = @("start-backend.cmd", "install-env.cmd", "one-click-start.cmd")
+$KnownRootCmdItems = @("one-click-start.cmd", "start-backend-pipeline-gui.cmd")
 $ExtraRootCmdItems = Get-ChildItem -LiteralPath $Root -Filter "*.cmd" -File |
     Where-Object { $KnownRootCmdItems -notcontains $_.Name } |
     ForEach-Object { $_.Name }
@@ -83,7 +84,7 @@ $Guide = @"
 GLM Coding Helper portable CPU package
 
 1. Install or update Tampermonkey script from glm-coding-helper.user.js.
-2. Double-click start-backend.cmd, one-click-start.cmd, or the localized start shortcut if present.
+2. Double-click one-click-start.cmd to install the environment on first run, or start-backend-pipeline-gui.cmd to launch the pipeline backend with GUI.
 3. Open the GLM Coding page from your normal browser session.
 
 This package includes the CPU Python environment and local model files.

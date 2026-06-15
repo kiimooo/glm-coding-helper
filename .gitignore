@@ -19,6 +19,8 @@ __pycache__/
 .paddlex_cache/
 .paddlex_cache_cpu/
 .paddlex_cache_gpu/
+# Local OCR model weights (downloaded by paddle, kept locally only)
+official_models/
 
 # Runtime output
 logs/

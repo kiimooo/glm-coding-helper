@@ -71,19 +71,20 @@ if (Test-Path $OnlineDir) { Remove-Item -LiteralPath $OnlineDir -Recurse -Force 
 $CommonItems = @(
     "glm-coding-helper.user.js",
     "scripts\userscripts\glm-coding-captcha-direct.user.js",
-    "start-backend.cmd",
-    "install-env.cmd",
     "one-click-start.cmd",
+    "start-backend-pipeline-gui.cmd",
+    "start-backend-pipeline-gui.ps1",
     "README.md",
     "CHANGELOG.md",
     "LICENSE",
     "requirements-backend-cpu.txt",
     "requirements-backend-gpu.txt",
     "scripts",
-    "models"
+    "models",
+    "backend"
 )
 
-$KnownRootCmdItems = @("start-backend.cmd", "install-env.cmd", "one-click-start.cmd")
+$KnownRootCmdItems = @("one-click-start.cmd", "start-backend-pipeline-gui.cmd")
 $ExtraRootCmdItems = Get-ChildItem -LiteralPath $Root -Filter "*.cmd" -File |
     Where-Object { $KnownRootCmdItems -notcontains $_.Name } |
     ForEach-Object { $_.Name }
@@ -103,7 +104,8 @@ Recommended:
 3. It will install CPU/GPU backend dependencies automatically when missing, then start the backend.
 
 Manual:
-- install-env.cmd installs CPU backend environment.
+- one-click-start.cmd installs the CPU backend environment on first run.
+- start-backend-pipeline-gui.cmd launches the pipeline backend with a Tk GUI window.
 - start-backend.cmd starts CPU backend after environment exists.
 "@
 Set-Content -LiteralPath (Join-Path $OnlineDir "ONLINE_INSTALLER_README.txt") -Value $OnlineGuide -Encoding UTF8

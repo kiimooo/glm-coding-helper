@@ -74,7 +74,7 @@ if (-not $Ready) {
     }
     if (-not $Ready) {
         Write-Host "[FAIL] Backend environment repair failed. Required deps still missing." -ForegroundColor Red
-        Write-Host "       Try running install-env.cmd manually." -ForegroundColor Red
+        Write-Host "       Try running one-click-start.cmd manually." -ForegroundColor Red
         Read-Host "Press Enter to exit"
         exit 1
     }
@@ -93,7 +93,7 @@ if ($Target -eq "auto" -and $InstallTarget -eq "gpu" -and -not (Test-PythonImpor
 # ── 检查 pipeline 后端依赖（非阻塞，仅提示）─────────────────
 $PipelineDepsOk = Test-PythonImports $SelectedPython "import fastapi, uvicorn, psutil"
 if (-not $PipelineDepsOk) {
-    Write-Host "[INFO] Pipeline backend deps (fastapi/uvicorn/psutil) not installed. Run install-env.cmd to add them." -ForegroundColor Yellow
+    Write-Host "[INFO] Pipeline backend deps (fastapi/uvicorn/psutil) not installed. Run start-backend-pipeline-gui.cmd to add them." -ForegroundColor Yellow
 }
 
 Write-Host "Starting backend in $StartMode mode on port $Port..."
