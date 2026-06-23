@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         智谱 GLM Coding Plan 抢购助手 + 本地 OCR 自动验证码
 // @namespace    http://tampermonkey.net/
-// @version      23.4
+// @version      23.5
 // @description  GLM Coding Rush / 智谱 GLM Coding Plan 抢购助手，一键抢购油猴脚本 / Tampermonkey userscript，配合本地 CPU/GPU OCR 自动识别中文点选验证码并点击，支持多窗口并发、限流重试和支付页安全保护
 // @author       mumumi
 // @include      https://*bigmodel.cn/glm-coding*
@@ -609,6 +609,9 @@
         CAPTCHA_CLICK_DELAY_MIN_MS: 250,
         CAPTCHA_CLICK_DELAY_MAX_MS: 400,
         CAPTCHA_CLICK_DELAY_JITTER_PERCENT: 20,
+        // 首击前延迟（验证码 DOM 渲染/动画需要时间，识别太快会导致第一击落空）。随机区间。
+        CAPTCHA_FIRST_CLICK_DELAY_MIN_MS: 150,
+        CAPTCHA_FIRST_CLICK_DELAY_MAX_MS: 300,
         RUSH_ENABLED        : false,
         RUSH_TARGET_HOUR    : 10,
         RUSH_TARGET_MIN     : 0,
@@ -1105,6 +1108,9 @@
         const delayMin = Number.isFinite(parseInt(CFG.CAPTCHA_CLICK_DELAY_MIN_MS, 10)) ? parseInt(CFG.CAPTCHA_CLICK_DELAY_MIN_MS, 10) : 250;
         const delayMaxRaw = Number.isFinite(parseInt(CFG.CAPTCHA_CLICK_DELAY_MAX_MS, 10)) ? parseInt(CFG.CAPTCHA_CLICK_DELAY_MAX_MS, 10) : 400;
         const delayMax = Math.max(delayMin, delayMaxRaw);
+        const fcMin = Number.isFinite(parseInt(CFG.CAPTCHA_FIRST_CLICK_DELAY_MIN_MS, 10)) ? parseInt(CFG.CAPTCHA_FIRST_CLICK_DELAY_MIN_MS, 10) : 150;
+        const fcMaxRaw = Number.isFinite(parseInt(CFG.CAPTCHA_FIRST_CLICK_DELAY_MAX_MS, 10)) ? parseInt(CFG.CAPTCHA_FIRST_CLICK_DELAY_MAX_MS, 10) : 300;
+        const fcMax = Math.max(fcMin, fcMaxRaw);
         if (!document.getElementById('glm-tf-s')) {
             const s = document.createElement('style'); s.id = 'glm-tf-s';
             s.textContent = '.tf-item{padding:6px 10px;margin-bottom:4px;border-radius:4px;cursor:pointer;font-size:13px;color:#333;border:1px solid transparent;transition:all .15s}.tf-item:hover{background:#f5f5f5}.tf-item.active{background:#e6f7ff;border-color:#91d5ff;color:#1890ff;font-weight:700}.tf-btn{padding:4px 8px;font-size:10px;cursor:pointer;border:1px solid #d9d9d9;border-radius:4px;background:#fff;color:#555;height:28px;transition:.2s}.tf-btn:hover{border-color:#40a9ff;color:#40a9ff}';
@@ -1154,6 +1160,18 @@
                         <span style="font-size:13px;color:#888">ms</span>
                         <span style="font-size:13px;color:#888">最大延时</span>
                         <input type="number" id="glm-cdmax" value="${delayMax}" min="1" max="10000" style="width:72px;padding:3px 6px;border:1px solid #d9d9d9;border-radius:4px;font-size:13px;text-align:center">
+                        <span style="font-size:13px;color:#888">ms</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:8px;margin-top:8px">
+                        <span style="font-size:13px;color:#666">首击前延时</span>
+                        <span title="识别完到点第一个字之间的等待。验证码 DOM 渲染/动画需要时间，OCR 太快会导致第一击落空。设为 0 则不等。随机区间。" style="cursor:help;color:#999;font-size:14px;border:1px solid #ccc;border-radius:50%;width:18px;height:18px;display:inline-flex;align-items:center;justify-content:center;line-height:1">?</span>
+                    </div>
+                    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                        <span style="font-size:13px;color:#888">最小</span>
+                        <input type="number" id="glm-fcdmin" value="${fcMin}" min="0" max="10000" style="width:72px;padding:3px 6px;border:1px solid #d9d9d9;border-radius:4px;font-size:13px;text-align:center">
+                        <span style="font-size:13px;color:#888">ms</span>
+                        <span style="font-size:13px;color:#888">最大</span>
+                        <input type="number" id="glm-fcdmax" value="${fcMax}" min="0" max="10000" style="width:72px;padding:3px 6px;border:1px solid #d9d9d9;border-radius:4px;font-size:13px;text-align:center">
                         <span style="font-size:13px;color:#888">ms</span>
                     </div>
                 </div>
@@ -1228,6 +1246,8 @@
                 CAPTCHA_CLICK_DELAY_MIN_MS: parseInt(panel.querySelector('#glm-cdmin').value, 10),
                 CAPTCHA_CLICK_DELAY_MAX_MS: parseInt(panel.querySelector('#glm-cdmax').value, 10),
                 CAPTCHA_CLICK_DELAY_JITTER_PERCENT: CFG.CAPTCHA_CLICK_DELAY_JITTER_PERCENT,
+                CAPTCHA_FIRST_CLICK_DELAY_MIN_MS: parseInt(panel.querySelector('#glm-fcdmin').value, 10),
+                CAPTCHA_FIRST_CLICK_DELAY_MAX_MS: parseInt(panel.querySelector('#glm-fcdmax').value, 10),
                 RUSH_ENABLED: panel.querySelector('#glm-re').checked,
                 RUSH_TARGET_HOUR: parseInt(panel.querySelector('#glm-rh').value, 10),
                 RUSH_TARGET_MIN: parseInt(panel.querySelector('#glm-rm').value, 10),
@@ -1598,6 +1618,8 @@
             maxGapMs: clampCaptchaInt(config.maxGapMs, 1, 10000, 500),
             jitterPercent: clampCaptchaInt(config.jitterPercent, 0, 1000, 20),
             stepDelays: stepDelays && stepDelays.length ? stepDelays : null,
+            firstClickMinMs: clampCaptchaInt(config.firstClickMinMs, 0, 10000, 150),
+            firstClickMaxMs: clampCaptchaInt(config.firstClickMaxMs, 0, 10000, 300),
         };
     }
     function getCaptchaDirectDelayConfig() {
@@ -1607,6 +1629,8 @@
             minGapMs: CAPTCHA_CFG.CAPTCHA_CLICK_DELAY_MIN_MS,
             maxGapMs: CAPTCHA_CFG.CAPTCHA_CLICK_DELAY_MAX_MS,
             jitterPercent: CAPTCHA_CFG.CAPTCHA_CLICK_DELAY_JITTER_PERCENT,
+            firstClickMinMs: Number.isFinite(parseInt(CAPTCHA_CFG.CAPTCHA_FIRST_CLICK_DELAY_MIN_MS, 10)) ? parseInt(CAPTCHA_CFG.CAPTCHA_FIRST_CLICK_DELAY_MIN_MS, 10) : 150,
+            firstClickMaxMs: Number.isFinite(parseInt(CAPTCHA_CFG.CAPTCHA_FIRST_CLICK_DELAY_MAX_MS, 10)) ? parseInt(CAPTCHA_CFG.CAPTCHA_FIRST_CLICK_DELAY_MAX_MS, 10) : 300,
         });
         var override = readCaptchaDirectDelayOverride();
         if (!override) return baseConfig;
@@ -1617,6 +1641,8 @@
             maxGapMs: override.maxGapMs != null ? override.maxGapMs : baseConfig.maxGapMs,
             jitterPercent: override.jitterPercent != null ? override.jitterPercent : baseConfig.jitterPercent,
             stepDelays: Array.isArray(override.stepDelays) ? override.stepDelays : baseConfig.stepDelays,
+            firstClickMinMs: override.firstClickMinMs != null ? override.firstClickMinMs : baseConfig.firstClickMinMs,
+            firstClickMaxMs: override.firstClickMaxMs != null ? override.firstClickMaxMs : baseConfig.firstClickMaxMs,
         });
     }
     function getWindowIndex() {
@@ -2292,6 +2318,15 @@
         var rect = bgEl.getBoundingClientRect();
         var plan = buildCaptchaDirectClickPlan(rect, result, schedule);
         console.log('[captcha-direct-page] click result:', JSON.stringify(result).substring(0, 260));
+        // 首击前延迟：验证码 DOM 渲染/动画需要时间，OCR 太快（v6 几十 ms）会导致第一击落空。
+        // 用随机区间，避免固定值被识别为机器。
+        var fcMin = Math.min(schedule.firstClickMinMs || 0, schedule.firstClickMaxMs || 0);
+        var fcMax = Math.max(schedule.firstClickMinMs || 0, schedule.firstClickMaxMs || 0);
+        if (fcMax > 0) {
+            var firstDelay = randCaptchaInt(fcMin, fcMax);
+            console.log('[captcha-direct-page] first-click delay: ' + firstDelay + 'ms');
+            await sleepCaptchaDirectClickGap(firstDelay);
+        }
         for (var i = 0; i < plan.steps.length; i++) {
             await runCaptchaDirectClickStep(bgEl, plan.steps[i], i < plan.steps.length - 1);
         }
