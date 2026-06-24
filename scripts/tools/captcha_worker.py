@@ -162,8 +162,36 @@ def indices_for_prompt(box_chars: list[str], prompt_chars: list[str]) -> list[in
 def map_prompt_to_boxes(box_chars: list[str], prompt_chars: list[str], ocr_rows: list[dict]) -> list[int]:
     try:
         return indices_for_prompt(box_chars, prompt_chars)
-    except RuntimeError as exc:
-        raise RuntimeError(f"{exc}; ocr_rows={json.dumps(ocr_rows, ensure_ascii=False)}") from exc
+    except RuntimeError:
+        # 精确匹配失败（OCR 误识别形近字 / 多窗口请求串了 / 验证码刷新）。
+        # 不要崩溃——用 candidate_scores 做 best-effort 匹配，每个 prompt 字选候选分最高的未用 box。
+        import sys as _sys
+        _sys.stderr.write(f"[worker] WARN: exact match failed prompt={''.join(prompt_chars)} boxes={''.join(box_chars)}; using candidate-score fallback\n")
+        _sys.stderr.flush()
+        used: set[int] = set()
+        indices: list[int] = []
+        for char in prompt_chars:
+            best_idx, best_score = -1, -1.0
+            for idx, row in enumerate(ocr_rows):
+                if idx in used:
+                    continue
+                scores = row.get("candidate_scores") or {}
+                score = float(scores.get(char, 0.0) or 0.0)
+                if score > best_score:
+                    best_score = score
+                    best_idx = idx
+            if best_idx < 0:
+                # 连候选分都没有，按位置兜底
+                for idx in range(len(ocr_rows)):
+                    if idx not in used:
+                        best_idx = idx
+                        break
+            if best_idx >= 0:
+                used.add(best_idx)
+                indices.append(best_idx)
+            else:
+                indices.append(0)
+        return indices
 
 
 def write_response(resp: dict) -> None:
