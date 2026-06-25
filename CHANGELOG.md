@@ -2,6 +2,7 @@
 
 ## 2026-06-26
 
+- 发布用户脚本 v23.7：修复 rush 模式 10:00 到点不自动点验证码确定的问题。根因是 PR #36 的验证码熔断（防自激振荡）有两个缺陷：① `captchaSession.stopped` 一旦置 true 后全文件无任何重置路径（`resetCaptchaSession`/`noteCaptchaSuccess` 都漏清），用户 10:00 前提前开页面、后端没起好或网络抖动累积 3 次失败后，验证码流程被永久焊死，到点也不再识别 → 自然不点确定；② 失败计数跨所有图累计，但自激振荡只在「同一张图反复开火」时才发生。修复：失败计数绑定到 `bgUrl`（换图即重置 failCount/stopped）；rush 黄金窗口（到点后 `holdWindowMs` 内）失败只冷却不 hard-stop；`resetCaptchaSession` 和 `noteCaptchaSuccess` 补齐清 `stopped`/`failCount`/`failBgUrl`。保留了 PR #36 对「同一张图自激振荡」的熔断保护，只消除误伤 rush 窗口和永久不可逆两个副作用。15 个单元测试覆盖同图熔断/换图重置/rush 窗口不焊死/窗口外熔断可恢复等场景。
 - 合并 PR #37（macOS 启动前校验后端 OCR 环境）：`one-click-start.command` 和 `start-backend-pipeline-gui.command` 启动时改为调用新增的 `scripts/check_backend_env.py`，除了 import 依赖，还会校验 `paddleocr/paddlex>=3.7.0` 版本下限，并验证默认 OCR 模型（`PP-OCRv6_tiny_rec`）在 `default_registry` 已注册，避免「能 import 但模型加载失败」被漏判而启动报错。`setup_backend_macos.sh` 安装末尾追加一次真实 `TextRecognition` 加载验证。
 - 合并 PR #36（首请求冷启动优化 + Chrome LNA 绕过 + 验证码熔断）：
   - 后端启动时跑一次真推理预热 OCR 模型，避免首个验证码请求因 JIT 冷启动超时。

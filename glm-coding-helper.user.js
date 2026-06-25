@@ -1,7 +1,7 @@
 ﻿// ==UserScript==
 // @name         智谱 GLM Coding Plan 抢购助手 + 本地 OCR 自动验证码
 // @namespace    http://tampermonkey.net/
-// @version      23.6
+// @version      23.7
 // @description  GLM Coding Rush / 智谱 GLM Coding Plan 抢购助手，一键抢购油猴脚本 / Tampermonkey userscript，配合本地 CPU/GPU OCR（PP-OCRv6）自动识别中文点选验证码并点击，支持多窗口并发、限流重试和支付页安全保护。订阅入口被风控拦截时手动点「特惠订阅」即可，验证码自动打。
 // @author       mumumi
 // @include      https://*bigmodel.cn/glm-coding*
@@ -1670,11 +1670,19 @@
         // 失败保护：错一次冷却一会、连续错够 N 次直接停手，避免被腾讯 SDK 自我重置
         // 的循环吸进 50ms 一发的自激振荡（一直打同一张图把后端打爆）。
         failCount: 0,
+        failBgUrl: '',
         cooldownUntil: 0,
         stopped: false,
     };
     const CAPTCHA_FAIL_COOLDOWN_MS = 1500;   // 单次失败冷却 1.5 秒
-    const CAPTCHA_FAIL_HARD_LIMIT = 3;       // 连续失败 ≥3 次后彻底停手
+    const CAPTCHA_FAIL_HARD_LIMIT = 3;       // 同一张图连续失败 ≥3 次后彻底停手
+    // rush 黄金窗口：到点后 holdWindowMs 内。窗口期内失败只冷却不 hard-stop，
+    // 保证 10:00 抢购黄金窗口不会被提前累积的失败熔断焊死（导致到点不识别不点确定）。
+    function isRushWindowActive() {
+        if (!RUSH_CFG.enabled) return false;
+        var remaining = getTargetTimestamp() - Date.now();
+        return remaining <= RUSH_CFG.holdWindowMs;
+    }
     function getCaptchaLastText() { return captchaSession.lastText; }
     function setCaptchaLastText(text) { captchaSession.lastText = text || ''; }
     function getCaptchaLastBgUrl() { return captchaSession.lastBgUrl; }
@@ -1685,13 +1693,24 @@
     function setCaptchaState(state) { captchaSession.state = state; }
     function isCaptchaStopped() { return captchaSession.stopped === true; }
     function inCaptchaCooldown() { return Date.now() < captchaSession.cooldownUntil; }
-    function noteCaptchaFailure() {
+    // 失败计数绑定到"同一张图"：换图（腾讯 SDK 重置、换新挑战、rush 窗口新验证码）时重置 failCount，
+    // 避免跨图累积误伤；自激振荡（同一张图反复开火）只在 failBgUrl 不变时才累计。
+    function noteCaptchaFailure(failBgUrl) {
+        if (failBgUrl && captchaSession.failBgUrl && failBgUrl !== captchaSession.failBgUrl) {
+            captchaSession.failCount = 0;
+            captchaSession.stopped = false;
+        }
+        captchaSession.failBgUrl = failBgUrl || '';
         captchaSession.failCount += 1;
         captchaSession.cooldownUntil = Date.now() + CAPTCHA_FAIL_COOLDOWN_MS;
-        if (captchaSession.failCount >= CAPTCHA_FAIL_HARD_LIMIT) {
+        // rush 黄金窗口（到点后 holdWindowMs 内）只冷却不 hard-stop，保证窗口期不会被焊死。
+        if (captchaSession.failCount >= CAPTCHA_FAIL_HARD_LIMIT && !isRushWindowActive()) {
             captchaSession.stopped = true;
-            console.warn('[captcha] 连续失败 ' + captchaSession.failCount + ' 次，自动验证已停止；'
+            console.warn('[captcha] 连续失败 ' + captchaSession.failCount + ' 次（同一图），自动验证已停止；'
                 + '请手动完成本次验证码，然后刷新页面或重新打开抢购弹窗以恢复自动模式。');
+        } else if (captchaSession.failCount >= CAPTCHA_FAIL_HARD_LIMIT) {
+            console.warn('[captcha] 失败 ' + captchaSession.failCount + ' 次，rush 窗口期内仅冷却不熔断；'
+                + '冷却 ' + CAPTCHA_FAIL_COOLDOWN_MS + 'ms 后再试');
         } else {
             console.warn('[captcha] 失败 ' + captchaSession.failCount + '/' + CAPTCHA_FAIL_HARD_LIMIT
                 + '，冷却 ' + CAPTCHA_FAIL_COOLDOWN_MS + 'ms 后再试');
@@ -1700,11 +1719,18 @@
     function noteCaptchaSuccess() {
         captchaSession.failCount = 0;
         captchaSession.cooldownUntil = 0;
+        captchaSession.failBgUrl = '';
+        captchaSession.stopped = false;
     }
     function resetCaptchaSession() {
         setCaptchaSent(false);
         setCaptchaLastText('');
         setCaptchaLastBgUrl('');
+        // 完整重置：清掉熔断状态，否则一旦 hard-stop 过，到点后验证码也再不识别（rush 卡点根因）。
+        captchaSession.failCount = 0;
+        captchaSession.cooldownUntil = 0;
+        captchaSession.failBgUrl = '';
+        captchaSession.stopped = false;
     }
     function serverRequest(method, path, data) {
         function doFetch() {
@@ -2421,8 +2447,8 @@
             // 注意：这里**不要**调 resetCaptchaSession()。原来的逻辑会立刻把 sent 清成
             // false，下一个 50ms tick 又对同一张图开火，形成自激振荡（被腾讯 SDK 的自我
             // 重置吸进死循环）。改为 noteCaptchaFailure 触发冷却 + 累计计数，连续失败
-            // 够多次后干脆停手等用户介入。
-            noteCaptchaFailure();
+            // 够多次后干脆停手等用户介入。传入 bgUrl 让计数绑定到"同一张图"，换图即重置。
+            noteCaptchaFailure(bgUrl);
         } finally {
             setCaptchaState('idle');
         }
